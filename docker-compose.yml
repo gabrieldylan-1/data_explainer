@@ -1,5 +1,11 @@
 version: '3.8'
 services:
+  redis:
+    image: redis:latest
+    ports:
+      - 6379:6379
+    networks:
+      - app_network
   mysql:
     image: mysql:latest
     container_name: mysql_container
