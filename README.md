@@ -4,6 +4,8 @@
 
 This project is a **FastAPI-powered RESTful API** designed to fetch, cache, and explain data results in plain language. It connects to a **MySQL database**, utilizes **Redis** for caching, and integrates **Grok AI** for generative AI interactions.
 
+The API provides tools to analyze crime statistics using sample data extracted from the [Crime Data from 2020 to Present](https://catalog.data.gov/dataset/crime-data-from-2020-to-present). This dataset offers insights into crime trends and patterns, making it easier to generate meaningful interpretations and explanations with the help of Grok AI integration.
+
 ## Features
 - **FastAPI Framework** for scalable and modern Python API development.
 - **MySQL Database** for data storage and querying.
