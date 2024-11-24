@@ -1,51 +1,76 @@
+import os
+import orjson
 from redis import Redis
 from fastapi import FastAPI
-from pydantic import BaseModel
-from .database.database_connection import get_connection, close_connection
-import orjson
+from openai import OpenAI
+from .models.CrimeByArea import map_crime_by_area
+from .models.VictimProfile import map_victim_profile
+from .dao.crime_by_area import CRIME_BY_AREA_QUERY, crime_by_area_req
+from .dao.profile_victim import PROFILE_VICTIM_QUERY, profile_victim_req
+from .llm_utils import create_prompt, generate_response
 
 
 app = FastAPI()
 redis_client = Redis(host='redis', port=6379, db=0)
-
-
-class CrimeByArea(BaseModel):
-    area: int
-    area_name: str
-    crime_code: int
-    crime_desc: str
-    committed_crimes: int
-
-
-class VictimProfile(BaseModel):
-    victim_sex: str
-    victim_descent: str
-    committed_crimes: int
-    average_victim_age: float
-
-
-def map_crime_by_area(rows):
-    return [CrimeByArea(
-        area=row['AREA'],
-        area_name=row['AREA_NAME'],
-        crime_code=row['crime_code'],
-        crime_desc=row['crime_desc'],
-        committed_crimes=row['committed_crimes']
-    ) for row in rows]
-
-
-def map_victim_profile(rows):
-    return [VictimProfile(
-        victim_sex=row['Vict_Sex'],
-        victim_descent=row['Vict_Descent'],
-        committed_crimes=row['committed_crimes'],
-        average_victim_age=row['average_victim_age']
-    ) for row in rows]
+XAI_API_KEY = os.getenv('XAI_API_KEY')
+client = OpenAI(
+    api_key=XAI_API_KEY,
+    base_url='https://api.x.ai/v1'
+)
 
 
 @app.get('/')
 def read_root():
     return {'message': 'hello world!'}
+
+
+@app.get('/explain-crime-by-area')
+def explain_crime_by_area():
+    data = crime_by_area_req()
+    llm_input = {
+        'query': CRIME_BY_AREA_QUERY,
+        'data': data,
+        'schema': {
+            "AREA": 'Area identifier',
+            "AREA_NAME": 'Name of the area',
+            "crime_code": 'Code representing the type of crime',
+            "crime_desc": 'Description of the crime type',
+            "committed_crimes": 'Number of crimes committed'
+        }
+    }
+
+    prompt = create_prompt(
+        llm_input['query'], 
+        llm_input['schema'], 
+        llm_input['data']
+    )
+
+    explanation = generate_response(client, prompt)
+    return {'explanation': explanation}
+
+
+@app.get('/explain-profile-victim')
+def explain_profile_victim():
+    data = profile_victim_req()
+    llm_input = {
+        'query': PROFILE_VICTIM_QUERY,
+        'data': data,
+        'schema': {
+            'Vict_Sex': 'Victim sex',
+            'Vict_Descent': 'Victim descent',
+            'committed_crimes': 'Number of crimes committed against these victims',
+            'average_victim_age': 'Average age of the victims'
+        }
+    }
+
+    prompt = create_prompt(
+        llm_input['query'], 
+        llm_input['schema'], 
+        llm_input['data']
+    )
+
+    explanation = generate_response(client, prompt)
+    return {'explanation': explanation}
 
 
 @app.get('/crime-by-area')
@@ -57,38 +82,14 @@ def crime_by_area():
         print('Data is coming from redis')
         return orjson.loads(data)
 
-    connection = get_connection()
-    if connection:
-        cursor = connection.cursor(dictionary=True)
-        query = """
-            SELECT
-                AREA,
-                AREA_NAME,
-                Crm_Cd AS crime_code,
-                Crm_Cd_Desc AS crime_desc,
-                COUNT(AREA_NAME) AS committed_crimes 
-            FROM Crime
-            GROUP BY
-                AREA,
-                AREA_NAME,
-                Crm_Cd,
-                Crm_Cd_Desc
-            ORDER BY committed_crimes DESC;
-        """
-        cursor.execute(query)
-        rows = cursor.fetchall()
-        cursor.close()
-        close_connection(connection)
-
-        items = map_crime_by_area(rows)
-        redis_client.set(
-            cache_key,
-            orjson.dumps([item.model_dump() for item in items]),
-            ex=3600
-        )
-        return items
-    else:
-        return {'error': 'failed to connect to the database'}
+    rows = crime_by_area_req()
+    items = map_crime_by_area(rows)
+    redis_client.set(
+        cache_key,
+        orjson.dumps([item.model_dump() for item in items]),
+        ex=3600
+    )
+    return items
 
 
 @app.get('/victim-profile')
@@ -99,33 +100,13 @@ def victim_profile():
     if data:
         print('Data is coming from redis')
         return orjson.loads(data)
+   
+    rows = profile_victim_req()
+    items = map_victim_profile(rows)
+    redis_client.set(
+        cache_key,
+        orjson.dumps([item.model_dump() for item in items]),
+        ex=3600
+    )
+    return items
 
-    connection = get_connection()
-    if connection:
-        cursor = connection.cursor(dictionary=True)
-        query = """
-            SELECT
-                Vict_Sex,
-                Vict_Descent,
-                COUNT(*) AS committed_crimes,
-                ROUND(AVG(Vict_Age)) AS average_victim_age 
-            FROM Crime
-            WHERE Vict_Sex IN ('F', 'M')
-            GROUP BY
-                Vict_Sex,
-                Vict_Descent
-            ORDER BY committed_crimes DESC;
-        """
-        cursor.execute(query)
-        rows = cursor.fetchall()
-        cursor.close()
-        close_connection(connection)
-        items = map_victim_profile(rows)
-        redis_client.set(
-            cache_key,
-            orjson.dumps([item.model_dump() for item in items]),
-            ex=3600
-        )
-        return items
-    else:
-        return {'error': 'failed to connect to the database'}
